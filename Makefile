@@ -6,4 +6,4 @@ CXXFLAGS=-O3 -Wall -Wextra -g -std=gnu++0x -march=native -mtune=native -IQSex090
 all: fa
 
 %: %.cc
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIBRARIES)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LIBRARIES) $(LDFLAGS) 
