@@ -42,6 +42,10 @@ Made all Intervals inclusive
   Time: 362.593750s
 Memory: 553MB
 
+Added Interval datatype
+  Time: 368.312500s
+Memory: 553MB
+
 */
 
 #include <stdio.h>
@@ -58,6 +62,11 @@ extern "C" {
 #include <QSopt_ex.h>
 }
 using namespace std;
+
+struct Interval {
+  float lower, upper;
+};
+
 
 #define FOR(i,n) for (int i=0;i<(signed int)(n);i++)
 
@@ -76,12 +85,12 @@ struct lp_t {
   int nvar;
   int nextrow;
 
-  lp_t(int nvar, const float *lo, const float *up) : nvar(nvar) {
+  lp_t(int nvar, const Interval *iv) : nvar(nvar) {
     nextrow = 0;
     prob = mpq_QScreate_prob("funapprox", QS_MIN);
     FOR(i,nvar) {
       mpq_class zero = 0;
-      mpq_class l = lo[i], h = up[i];
+      mpq_class l = iv[i].lower, h = iv[i].upper;
       mpq_QSnew_col(prob, zero.get_mpq_t(), l.get_mpq_t(), h.get_mpq_t(), 0);
     }
   }
@@ -125,28 +134,26 @@ struct lp_t {
 // The implementation of this function is quite savage.  It could profitably be
 // replaced by a couple of binary searches.  However, this implementation works
 // and I'm not too keen on touching it.
-void reverse_fmaf(float &lo, float &hi, float y, float z, float lb, float ub) {
+Interval reverse_fmaf(float y, float z, Interval d) {
   if (y < 0) {
     y = -y;
     z = -z;
-    float tmp = ub;
-    ub = -lb;
-    lb = -tmp;
+    d = { -d.upper, -d.upper };
   }
 
-  lo = -FLT_MAX; hi = FLT_MAX;
+  float lo = -FLT_MAX, hi = FLT_MAX;
   while (nextafterf(lo, hi) < hi) {
     float c = lo/2 + hi/2;   // This BS is bad for floats.
     float cc = fmaf(c, y, z);
-    if (cc < lb) lo = nextafterf(c, 1.0/0.0);
+    if (cc < d.lower) lo = nextafterf(c, 1.0/0.0);
     else hi = c;
   }
   lo = nextafterf(lo, -1.0/0.0);
   lo = nextafterf(lo, -1.0/0.0);
-  assert(fmaf(lo, y, z) < lb);
-  while (fmaf(lo, y, z) < lb) lo = nextafterf(lo, 1.0/0.0);
+  assert(fmaf(lo, y, z) < d.lower);
+  while (fmaf(lo, y, z) < d.lower) lo = nextafterf(lo, 1.0/0.0);
   hi = lo;
-  #define STEPIT(step) while (hi + (float)step != hi && fmaf(hi+(float)step, y, z) < ub) hi = hi + (float)step;
+  #define STEPIT(step) while (hi + (float)step != hi && fmaf(hi+(float)step, y, z) < d.upper) hi = hi + (float)step;
   for (int zzz = 0; zzz < 3; zzz++) {
     STEPIT(0x1.0p+120)
     STEPIT(0x1.0p+110)
@@ -187,12 +194,14 @@ void reverse_fmaf(float &lo, float &hi, float y, float z, float lb, float ub) {
     STEPIT(0x1.0p-120)
   }
   #undef STEPIT
-  while (fmaf(hi, y, z) <= ub) hi = nextafterf(hi, 1.0/0.0);
+  while (fmaf(hi, y, z) <= d.upper) hi = nextafterf(hi, 1.0/0.0);
   hi = nextafterf(hi, -1.0/0.0);
-  assert(lb <= fmaf(           lo,            y, z));
-  assert(      fmaf(           hi,            y, z) <= ub);
-  assert(      fmaf(nextafterf(lo, -1.0/0.0), y, z) <  lb);
-  assert(ub <  fmaf(nextafterf(hi,  1.0/0.0), y, z));
+  assert(d.lower <= fmaf(           lo,            y, z));
+  assert(           fmaf(           hi,            y, z) <= d.upper);
+  assert(           fmaf(nextafterf(lo, -1.0/0.0), y, z) <  d.lower);
+  assert(d.upper <  fmaf(nextafterf(hi,  1.0/0.0), y, z));
+
+  return { lo, hi };
 }
 
 // A node in a straight-line program that only has constants, variables, and
@@ -205,26 +214,27 @@ struct expression {
     struct { expression *a, *b, *c; };
   };
 
-  void getbounds(const float *xl, const float *xu, float &lower, float &upper) {
+  Interval getbounds(const Interval *x) {
     switch (tag) {
-      case 0: lower = upper = val; return;
-      case 1: lower = xl[varno]; upper = xu[varno]; return;
+      case 0: return { val, val};
+      case 1: return x[varno];
       case 2: {
-        float al, au, bl, bu, cl, cu;
-        a->getbounds(xl, xu, al, au);
-        b->getbounds(xl, xu, bl, bu);
-        c->getbounds(xl, xu, cl, cu);
-        float v1 = fmaf(al, bl, cl);
-        float v2 = fmaf(au, bl, cl);
-        float v3 = fmaf(al, bu, cl);
-        float v4 = fmaf(au, bu, cl);
-        float v5 = fmaf(al, bl, cu);
-        float v6 = fmaf(au, bl, cu);
-        float v7 = fmaf(al, bu, cu);
-        float v8 = fmaf(au, bu, cu);
-        lower = min(min(v1, v2), min(v3, v4));
-        upper = max(max(v5, v6), max(v7, v8));
-      } return;
+        Interval ia = a->getbounds(x);
+        Interval ib = b->getbounds(x);
+        Interval ic = c->getbounds(x);
+        float v1 = fmaf(ia.lower, ib.lower, ic.lower);
+        float v2 = fmaf(ia.upper, ib.lower, ic.lower);
+        float v3 = fmaf(ia.lower, ib.upper, ic.lower);
+        float v4 = fmaf(ia.upper, ib.upper, ic.lower);
+        float v5 = fmaf(ia.lower, ib.lower, ic.upper);
+        float v6 = fmaf(ia.upper, ib.lower, ic.upper);
+        float v7 = fmaf(ia.lower, ib.upper, ic.upper);
+        float v8 = fmaf(ia.upper, ib.upper, ic.upper);
+        return {
+          min(min(v1, v2), min(v3, v4)),
+          max(max(v5, v6), max(v7, v8))
+        };
+      }
       default: abort();
     }
   }
@@ -291,35 +301,34 @@ float half_ulp(float x) {
 // Hack this function, and `main()` below, if you'd like to do something
 // other than approximate `tan(x)` on `(10^{-4}, pi/4)` within `0.999` ulp.
 static double ulps_wrong = 0.999;
-void get_bounds(float x, float &lower, float &upper) {
+Interval get_bounds(float x) {
   double d = tan((double)x);
   float ulp = 2 * half_ulp((float)d);
   double lo = d - ulps_wrong * ulp, up = d + ulps_wrong * ulp;
-  lower = lo; upper = up;
+  float lower = lo, upper = up;
   if (lower < lo) lower = nextafterf(lower, 1.0/0.0);
   if (upper > up) upper = nextafterf(upper, -1.0/0.0);
+  return { lower, upper };
 }
 
 // Given a straight-line program `e` and bounds
 // `[clb_0, cub_0] x ... x [clb_{nvar-1}, cub_{nvar-1}]` on the unspecified
 // coefficients in `e`, this function computes an upper bound on the roundoff
 // error incurred when evaluating `e` in `float` arithmetic.
-mpq_class get_max_roundoff(expression *e, const float *clb, const float *cub) {
+mpq_class get_max_roundoff(expression *e, const Interval *cb) {
   switch (e->tag) {
     case 0: return 0;
     case 1: return 0;
     case 2: {
-      float alo, ahi, blo, bhi;
-      float elo, ehi;
-      e->a->getbounds(clb, cub, alo, ahi);
-      e->b->getbounds(clb, cub, blo, bhi);
-      e->getbounds(clb, cub, elo, ehi);
-      float abound = max(fabs(alo), fabs(ahi));
-      float bbound = max(fabs(blo), fabs(bhi));
-      float ebound = max(fabs(elo), fabs(ehi));
-      mpq_class around = get_max_roundoff(e->a, clb, cub);
-      mpq_class bround = get_max_roundoff(e->b, clb, cub);
-      mpq_class cround = get_max_roundoff(e->c, clb, cub);
+      Interval ia = e->a->getbounds(cb);
+      Interval ib = e->b->getbounds(cb);
+      Interval ie = e->getbounds(cb);
+      float abound = max(fabs(ia.lower), fabs(ia.upper));
+      float bbound = max(fabs(ib.lower), fabs(ib.upper));
+      float ebound = max(fabs(ie.lower), fabs(ie.upper));
+      mpq_class around = get_max_roundoff(e->a, cb);
+      mpq_class bround = get_max_roundoff(e->b, cb);
+      mpq_class cround = get_max_roundoff(e->c, cb);
       return half_ulp(ebound) + cround + bbound * around + abound * bround;
     }
     default: abort();
@@ -364,31 +373,29 @@ void get_linear_poly(expression *e, vector<mpq_class> &poly, mpq_class &con) {
 // Peel back fma(const, f, const) -> f using reverse_fma.
 // Now we have an expression tree and some bounds on the value it must take.
 // Convert the expression tree to an inequality pair.
-void peel_bounded_expression(expression *&e, float &lower, float &upper) {
+void peel_bounded_expression(expression *&e, Interval &iv) {
   while (e->tag == 2 && e->c->tag == 0
          && (e->a->tag == 0 || e->b->tag == 0)) {
     if (e->a->tag == 0 && e->b->tag == 0) abort();
-    float lo2, up2;
     float cee = e->c->val, bee;
     if (e->a->tag == 0) bee = e->a->val;
     else if (e->b->tag == 0) bee = e->b->val;
     else abort();
-    reverse_fmaf(lo2, up2, bee, cee, lower, upper);
-    lower = lo2; upper = up2;
+    iv = reverse_fmaf(bee, cee, iv);
     if (e->a->tag == 0) e = e->b; else e = e->a;
   }
 }
 
 // This function does the dirty work of `gen_inequalities` below.
-void gen_inequalities_inner(expression *e, float lower, float upper, int nvar,
-    const float *clb, const float *cub, lp_t *lp) {
-  peel_bounded_expression(e, lower, upper);
+void gen_inequalities_inner(expression *e, Interval iv, int nvar, const Interval *cb, lp_t *lp) {
+  peel_bounded_expression(e, iv);
 
   vector<mpq_class> poly(nvar); mpq_class con;
   get_linear_poly(e, poly, con);
 
-  mpq_class err = get_max_roundoff(e, clb, cub);
-  mpq_class rhslo = lower - con - err, rhsup = upper - con + err;
+  mpq_class err = get_max_roundoff(e, cb);
+  mpq_class rhslo = iv.lower - con - err;
+  mpq_class rhsup = iv.upper - con + err;
 
   lp->introduce_row(poly, 'G', rhslo);
   lp->introduce_row(poly, 'L', rhsup);
@@ -400,26 +407,25 @@ void gen_inequalities_inner(expression *e, float lower, float upper, int nvar,
 // linear program `lp` that provably must be satisfied by the unspecified
 // coefficients.  These inequalities are derived by considering evaluation at
 // the test point `x`.
-void gen_inequalities(expression *e, int nvar,
-    const float *clb, const float *cub, float x, lp_t *lp) {
+void gen_inequalities(expression *e, int nvar, const Interval *cb, float x, lp_t *lp) {
   expression *ee = subs(e, -1, x);
-  float lower, upper;
-  get_bounds(x, lower, upper);
-  gen_inequalities_inner(ee, lower, upper, nvar, clb, cub, lp);
+  Interval iv = get_bounds(x);
+  gen_inequalities_inner(ee, iv, nvar, cb, lp);
 }
 
 // Compute lower and upper bounds on variable `varno` implied by the polyhedron
 // defined by the constraints of `lp`.  Outputs a range `[lower, upper]`.
-void get_var_bounds(lp_t *lp, int varno, float &lower, float &upper) {
+Interval get_var_bounds(lp_t *lp, int varno) {
   vector<mpq_class> obj(lp->nvar);
   obj[varno] = 1; lp->set_objective(obj);
   mpq_class lo = lp->solve();
   obj[varno] = -1; lp->set_objective(obj);
   mpq_class up = -lp->solve();
-  lower = lo.get_d(); // XXX Possible double-rounding anomaly?
-  upper = up.get_d(); // XXX Possible double-rounding anomaly?
+  float lower = lo.get_d(); // XXX Possible double-rounding anomaly?
+  float upper = up.get_d(); // XXX Possible double-rounding anomaly?
   while (lower < lo) lower = nextafterf(lower,  1.0/0.0);
   while (up < upper) upper = nextafterf(upper, -1.0/0.0);
+  return { lower, upper };
 }
 
 // Bias guesses toward the centre of the interval.
@@ -429,43 +435,41 @@ double randpt() {
 }
 
 // This is the body of the diving heuristic.
-vector<float> dive(int nvar, const float *clb, const float *cub,
-    const vector<pair<expression *, pair<float, float> > > &ineqs,
+vector<float> dive(int nvar, const Interval *cb,
+    const vector<pair<expression *, Interval>> &ineqs,
     const vector<float> &preferred, int tries = 8) {
   if (nvar == 0) return vector<float>();
-  lp_t lp(nvar, clb, cub);
+  lp_t lp(nvar, cb);
   FOR(i, ineqs.size()) {
-    gen_inequalities_inner(ineqs[i].first, ineqs[i].second.first,
-        ineqs[i].second.second, nvar, clb, cub, &lp);
+    gen_inequalities_inner(ineqs[i].first, ineqs[i].second, nvar, cb, &lp);
   }
-  float alo, ahi;
-  get_var_bounds(&lp, nvar-1, alo, ahi);
+  Interval a = get_var_bounds(&lp, nvar-1);
 
-  double num_ulps = (cub[nvar-1] - clb[nvar-1])
-      / half_ulp(max(fabs(clb[nvar-1]), fabs(cub[nvar-1])));
+  double num_ulps = (cb[nvar-1].upper - cb[nvar-1].lower)
+      / half_ulp(max(fabs(cb[nvar-1].lower), fabs(cb[nvar-1].upper)));
   printf("%a\n", num_ulps);
 
   if (num_ulps > tries) {
     FOR(zzz, tries) {
-      float f = randpt() * (ahi - alo) + alo;
-      if (zzz == 0 && preferred[nvar-1] >= alo && preferred[nvar-1] <= ahi)
+      float f = randpt() * (a.upper - a.lower) + a.lower;
+      if (zzz == 0 && preferred[nvar-1] >= a.lower && preferred[nvar-1] <= a.upper)
         f = preferred[nvar-1];
-      vector<pair<expression *, pair<float, float>>> new_ineqs;
+      vector<pair<expression *, Interval>> new_ineqs;
       FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
-        vector<float> ans = dive(nvar-1, clb, cub, new_ineqs, preferred);
+        vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred);
         ans.push_back(f);
         return ans;
       } catch (const char *) {}
     }
   } else {
-    for (float f = clb[nvar-1]; f <= cub[nvar-1]; f = nextafterf(f, 1.0/0.0)) {
-      vector<pair<expression *, pair<float, float>>> new_ineqs;
+    for (float f = cb[nvar-1].lower; f <= cb[nvar-1].upper; f = nextafterf(f, 1.0/0.0)) {
+      vector<pair<expression *, Interval>> new_ineqs;
       FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
-        vector<float> ans = dive(nvar-1, clb, cub, new_ineqs, preferred, 100);
+        vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred, 100);
         ans.push_back(f);
         return ans;
       } catch (const char *) {}
@@ -477,25 +481,23 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
 // Given a straight-line program `e`, an interval `[xlb, xub]` of `float`s, and
 // a list `c` of coefficients, find at least one point `x` at which `e` with
 // coefficients `c` yields an unacceptable function value.
-int find_cuts(expression *e, float xlb, float xub, const vector<float> &c, vector<float> &testpoints) {
+int find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float> &testpoints) {
   float foo[c.size()+1];
   FOR(i, c.size()) foo[i+1] = c[i];
   int found = 0;
   FOR(i, 1000000) {
-    float x = xlb + drand48() * (xub - xlb);
+    float x = xb.lower + drand48() * (xb.upper - xb.lower);
     foo[0] = x;
     float fx = eval(e, foo+1);
-    float lb, ub;
-    get_bounds(x, lb, ub);
-    if (fx < lb || fx > ub) testpoints.push_back(x), found++;
+    Interval b = get_bounds(x);
+    if (fx < b.lower || fx > b.upper) testpoints.push_back(x), found++;
     if (found) return found;
   }
-  for (float x = xub; x >= xlb && !found; x = nextafterf(x, -1.0/0.0)) {
+  for (float x = xb.upper; x >= xb.lower && !found; x = nextafterf(x, -1.0/0.0)) {
     foo[0] = x;
     float fx = eval(e, foo+1);
-    float lb, ub;
-    get_bounds(x, lb, ub);
-    if (fx < lb || fx > ub) testpoints.push_back(x), found++;
+    Interval b = get_bounds(x);
+    if (fx < b.lower || fx > b.upper) testpoints.push_back(x), found++;
   }
   return found;
 }
@@ -505,34 +507,31 @@ int find_cuts(expression *e, float xlb, float xub, const vector<float> &c, vecto
 // bounds `[clb_0, cub_0] x ... x [clb_{nvar-1}, cub_{nvar-1}]` on the
 // unspecified coefficients, and a nonempty vector `testpoints` of test points,
 // try to find coefficients that yield an acceptable approximation.
-int findit(expression *e, int nvar, float xlb, float xub,
-    float *clb, float *cub, vector<float> &testpoints) {
+int findit(expression *e, int nvar, Interval xb, Interval *cb, vector<float> &testpoints) {
   vector<float> coeffs(nvar);
-  vector<pair<expression *, pair<float, float>>> exprs;
+  vector<pair<expression *, Interval>> exprs;
   while (1) {
     try {
-      lp_t lp(nvar, clb, cub);
+      lp_t lp(nvar, cb);
       FOR(i, testpoints.size()) {
-        gen_inequalities(e, nvar, clb, cub, testpoints[i], &lp);
+        gen_inequalities(e, nvar, cb, testpoints[i], &lp);
       }
       FOR(i, nvar) {
-        get_var_bounds(&lp, i, clb[i], cub[i]);
+        cb[i] = get_var_bounds(&lp, i);
       }
-      FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", clb[i], i, cub[i]);
+      FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", cb[i].lower, i, cb[i].upper);
     } catch (const char *) { return -2; } // infeasible.
 
     {
       float t = testpoints[testpoints.size() - 1];
-      float lower, upper;
-      get_bounds(t, lower, upper);
-      exprs.push_back(make_pair(subs(e, -1, t), make_pair(lower, upper)));
+      exprs.push_back(make_pair(subs(e, -1, t), get_bounds(t)));
     }
     try {
-      coeffs = dive(nvar, clb, cub, exprs, coeffs, 50);
+      coeffs = dive(nvar, cb, exprs, coeffs, 50);
     } catch (const char *) { return -1; } // infeasible or too hard to solve.
     printf("usces: %lli\n", get_cpu_usecs() - program_start);
     FOR(i, coeffs.size()) printf("float c%i = %a\n", i, coeffs[i]);
-    if (!find_cuts(e, xlb, xub, coeffs, testpoints)) return 0;
+    if (!find_cuts(e, xb, coeffs, testpoints)) return 0;
     printf("vector<float> testpoints = {");
     FOR(i, testpoints.size()) printf(i?",%a":"%a", testpoints[i]);
     printf("};\n");
@@ -561,12 +560,20 @@ int main() {
   tan_poly = fma(s, tan_poly, expression::con(0));
   tan_poly = fma(x, tan_poly, x);
 
-  float clb[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
-  float cub[8] = {1,1,1,1,1,1,1,1};
+  Interval cb[8] = {
+    {-1, 1},
+    {-1, 1},
+    {-1, 1},
+    {-1, 1},
+    {-1, 1},
+    {-1, 1},
+    {-1, 1},
+    {-1, 1}
+  };
 
   vector<float> testpoints = {0x1p-1};
 
-  int k = findit(tan_poly, 7, 1e-4, M_PI/4, clb, cub, testpoints);
+  int k = findit(tan_poly, 7, {1e-4, M_PI/4}, cb, testpoints);
 
   printf("%i\n", k);
 }
