@@ -15,6 +15,20 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
+
+/*
+Roughly eyeballed performance numbers:
+
+Baseline:
+  Time: 622.171875s
+Memory: 3168MB
+
+Fewer redundant expressions:
+  Time: 460.390625s
+Memory:  566MB
+
+*/
+
 #include <stdio.h>
 #include <assert.h>
 #include <float.h>
@@ -238,33 +252,24 @@ struct expression {
   }
 };
 
-expression *constant_fold(expression *e) {
-  switch (e->tag) {
-    case 0: return new expression(*e);
-    case 1: return new expression(*e);
-    case 2: {
-      expression *a2 = constant_fold(e->a), *b2 = constant_fold(e->b),
-                 *c2 = constant_fold(e->c);
-      if (a2->tag == 0 && b2->tag == 0 && c2->tag == 0)
-        return expression::con(fmaf(a2->val, b2->val, c2->val));
-      else return expression::fma(a2, b2, c2);
-    }
-    default: abort();
-  }
-}
-
 expression *subs(expression *e, int varno, float value) {
   switch (e->tag) {
-    case 0: return new expression(*e);
     case 1: {
       if (e->varno == varno) return expression::con(value);
-      else return new expression(*e);
-    } abort();
-    case 2: return expression::fma(subs(e->a, varno, value),
-                                   subs(e->b, varno, value),
-                                   subs(e->c, varno, value));
-    default: abort();
+    } break;
+    case 2: {
+      expression *a2 = subs(e->a, varno, value),
+                 *b2 = subs(e->b, varno, value),
+                 *c2 = subs(e->c, varno, value);
+
+    if (a2->tag == 0 && b2->tag == 0 && c2->tag == 0)
+      return expression::con(fmaf(a2->val, b2->val, c2->val));
+
+    if (a2 != e->a || b2 != e->b || c2 != e->c)
+      return expression::fma(a2, b2, c2);
+    } break;
   }
+  return e;
 }
 
 float eval(expression *e, float *x) {
@@ -416,7 +421,7 @@ void gen_inequalities_inner(expression *e, float lower, float upper, int nvar,
 // the test point `x`.
 void gen_inequalities(expression *e, int nvar,
     const float *clb, const float *cub, float x, lp_t *lp) {
-  expression *ee = constant_fold(subs(e, -1, x));
+  expression *ee = subs(e, -1, x);
   float lower, upper;
   get_bounds(x, lower, upper);
   gen_inequalities_inner(ee, lower, upper, nvar, clb, cub, lp);
@@ -467,8 +472,7 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
       if (zzz == 0 && preferred[nvar-1] >= alo && preferred[nvar-1] <= ahi)
         f = preferred[nvar-1];
       vector<pair<expression *, pair<float, float> > > new_ineqs;
-      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(
-          constant_fold(subs(ineqs[i].first, nvar-1, f)),
+      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
         vector<float> ans = dive(nvar-1, clb, cub, new_ineqs, preferred);
@@ -479,8 +483,7 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
   } else {
     for (float f = clb[nvar-1]; f < cub[nvar-1]; f = nextafterf(f, 1.0/0.0)) {
       vector<pair<expression *, pair<float, float> > > new_ineqs;
-      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(
-          constant_fold(subs(ineqs[i].first, nvar-1, f)),
+      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
         vector<float> ans = dive(nvar-1, clb, cub, new_ineqs, preferred, 100);
@@ -544,8 +547,7 @@ int findit(expression *e, int nvar, float xlb, float xub,
     FOR(i, testpoints.size()) {
       float lower, upper;
       get_bounds(testpoints[i], lower, upper);
-      exprs.push_back(make_pair(constant_fold(subs(e, -1, testpoints[i])),
-                                make_pair(lower, upper)));
+      exprs.push_back(make_pair(subs(e, -1, testpoints[i]), make_pair(lower, upper)));
     }
     try {
       coeffs = dive(nvar, clb, cub, exprs, coeffs, 50);
