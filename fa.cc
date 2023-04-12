@@ -38,6 +38,10 @@ Stopped recreating the exprs vector every time.
   Time: 423.609375s
 Memory:  553MB
 
+Made all Intervals inclusive
+  Time: 362.593750s
+Memory: 553MB
+
 */
 
 #include <stdio.h>
@@ -123,12 +127,11 @@ struct lp_t {
 // and I'm not too keen on touching it.
 void reverse_fmaf(float &lo, float &hi, float y, float z, float lb, float ub) {
   if (y < 0) {
-    reverse_fmaf(lo, hi, -y, -z, -nextafterf(ub, -1.0/0.0), -nextafterf(lb, -1.0/0.0));
-    assert(fmaf(lo, y, z) < ub);
-    assert(fmaf(hi, y, z) < lb);
-    assert(fmaf(nextafterf(lo, -1.0/0.0), y, z) >= ub);
-    assert(fmaf(nextafterf(hi, -1.0/0.0), y, z) >= lb);
-    return;
+    y = -y;
+    z = -z;
+    float tmp = ub;
+    ub = -lb;
+    lb = -tmp;
   }
 
   lo = -FLT_MAX; hi = FLT_MAX;
@@ -184,11 +187,12 @@ void reverse_fmaf(float &lo, float &hi, float y, float z, float lb, float ub) {
     STEPIT(0x1.0p-120)
   }
   #undef STEPIT
-  while (fmaf(hi, y, z) < ub) hi = nextafterf(hi, 1.0/0.0);
-  assert(fmaf(lo, y, z) >= lb);
-  assert(fmaf(hi, y, z) >= ub);
-  assert(fmaf(nextafterf(lo, -1.0/0.0), y, z) < lb);
-  assert(fmaf(nextafterf(hi, -1.0/0.0), y, z) < ub);
+  while (fmaf(hi, y, z) <= ub) hi = nextafterf(hi, 1.0/0.0);
+  hi = nextafterf(hi, -1.0/0.0);
+  assert(lb <= fmaf(           lo,            y, z));
+  assert(      fmaf(           hi,            y, z) <= ub);
+  assert(      fmaf(nextafterf(lo, -1.0/0.0), y, z) <  lb);
+  assert(ub <  fmaf(nextafterf(hi,  1.0/0.0), y, z));
 }
 
 // A node in a straight-line program that only has constants, variables, and
@@ -257,11 +261,11 @@ expression *subs(expression *e, int varno, float value) {
                  *b2 = subs(e->b, varno, value),
                  *c2 = subs(e->c, varno, value);
 
-    if (a2->tag == 0 && b2->tag == 0 && c2->tag == 0)
-      return expression::con(fmaf(a2->val, b2->val, c2->val));
+      if (a2->tag == 0 && b2->tag == 0 && c2->tag == 0)
+        return expression::con(fmaf(a2->val, b2->val, c2->val));
 
-    if (a2 != e->a || b2 != e->b || c2 != e->c)
-      return expression::fma(a2, b2, c2);
+      if (a2 != e->a || b2 != e->b || c2 != e->c)
+        return expression::fma(a2, b2, c2);
     } break;
   }
   return e;
@@ -282,7 +286,7 @@ float half_ulp(float x) {
   return (nextafterf(x, 1.0/0.0) - x) / 2;
 }
 
-// Compute the range `[lower, upper)` of acceptable function values at `x`.
+// Compute the range `[lower, upper]` of acceptable function values at `x`.
 //
 // Hack this function, and `main()` below, if you'd like to do something
 // other than approximate `tan(x)` on `(10^{-4}, pi/4)` within `0.999` ulp.
@@ -294,7 +298,6 @@ void get_bounds(float x, float &lower, float &upper) {
   lower = lo; upper = up;
   if (lower < lo) lower = nextafterf(lower, 1.0/0.0);
   if (upper > up) upper = nextafterf(upper, -1.0/0.0);
-  upper = nextafterf(upper, 1.0/0.0);
 }
 
 // Given a straight-line program `e` and bounds
@@ -380,7 +383,6 @@ void peel_bounded_expression(expression *&e, float &lower, float &upper) {
 void gen_inequalities_inner(expression *e, float lower, float upper, int nvar,
     const float *clb, const float *cub, lp_t *lp) {
   peel_bounded_expression(e, lower, upper);
-  upper = nextafterf(upper, -1.0/0.0);
 
   vector<mpq_class> poly(nvar); mpq_class con;
   get_linear_poly(e, poly, con);
@@ -407,7 +409,7 @@ void gen_inequalities(expression *e, int nvar,
 }
 
 // Compute lower and upper bounds on variable `varno` implied by the polyhedron
-// defined by the constraints of `lp`.  Outputs a range `[lower, upper)`.
+// defined by the constraints of `lp`.  Outputs a range `[lower, upper]`.
 void get_var_bounds(lp_t *lp, int varno, float &lower, float &upper) {
   vector<mpq_class> obj(lp->nvar);
   obj[varno] = 1; lp->set_objective(obj);
@@ -416,9 +418,8 @@ void get_var_bounds(lp_t *lp, int varno, float &lower, float &upper) {
   mpq_class up = -lp->solve();
   lower = lo.get_d(); // XXX Possible double-rounding anomaly?
   upper = up.get_d(); // XXX Possible double-rounding anomaly?
-  while (lower < lo) lower = nextafterf(lower, 1.0/0.0);
-  while (upper > up) upper = nextafterf(upper, -1.0/0.0);
-  upper = nextafterf(upper, 1.0/0.0);
+  while (lower < lo) lower = nextafterf(lower,  1.0/0.0);
+  while (up < upper) upper = nextafterf(upper, -1.0/0.0);
 }
 
 // Bias guesses toward the centre of the interval.
@@ -439,7 +440,6 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
   }
   float alo, ahi;
   get_var_bounds(&lp, nvar-1, alo, ahi);
-  ahi = nextafterf(ahi, -1.0/0.0);
 
   double num_ulps = (cub[nvar-1] - clb[nvar-1])
       / half_ulp(max(fabs(clb[nvar-1]), fabs(cub[nvar-1])));
@@ -450,7 +450,7 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
       float f = randpt() * (ahi - alo) + alo;
       if (zzz == 0 && preferred[nvar-1] >= alo && preferred[nvar-1] <= ahi)
         f = preferred[nvar-1];
-      vector<pair<expression *, pair<float, float> > > new_ineqs;
+      vector<pair<expression *, pair<float, float>>> new_ineqs;
       FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
@@ -460,8 +460,8 @@ vector<float> dive(int nvar, const float *clb, const float *cub,
       } catch (const char *) {}
     }
   } else {
-    for (float f = clb[nvar-1]; f < cub[nvar-1]; f = nextafterf(f, 1.0/0.0)) {
-      vector<pair<expression *, pair<float, float> > > new_ineqs;
+    for (float f = clb[nvar-1]; f <= cub[nvar-1]; f = nextafterf(f, 1.0/0.0)) {
+      vector<pair<expression *, pair<float, float>>> new_ineqs;
       FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
           ineqs[i].second));
       try {
@@ -487,7 +487,7 @@ int find_cuts(expression *e, float xlb, float xub, const vector<float> &c, vecto
     float fx = eval(e, foo+1);
     float lb, ub;
     get_bounds(x, lb, ub);
-    if (fx < lb || fx >= ub) testpoints.push_back(x), found++;
+    if (fx < lb || fx > ub) testpoints.push_back(x), found++;
     if (found) return found;
   }
   for (float x = xub; x >= xlb && !found; x = nextafterf(x, -1.0/0.0)) {
@@ -495,7 +495,7 @@ int find_cuts(expression *e, float xlb, float xub, const vector<float> &c, vecto
     float fx = eval(e, foo+1);
     float lb, ub;
     get_bounds(x, lb, ub);
-    if (fx < lb || fx >= ub) testpoints.push_back(x), found++;
+    if (fx < lb || fx > ub) testpoints.push_back(x), found++;
   }
   return found;
 }
@@ -517,7 +517,6 @@ int findit(expression *e, int nvar, float xlb, float xub,
       }
       FOR(i, nvar) {
         get_var_bounds(&lp, i, clb[i], cub[i]);
-        cub[i] = nextafterf(cub[i], -1.0/0.0);
       }
       FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", clb[i], i, cub[i]);
     } catch (const char *) { return -2; } // infeasible.
