@@ -31,6 +31,9 @@ Improved getbounds
   Time: 453.671875s
 Memory:  566MB
 
+Removed unused variables
+  No change.
+
 */
 
 #include <stdio.h>
@@ -324,11 +327,10 @@ mpq_class get_max_roundoff(expression *e, const float *clb, const float *cub) {
     case 0: return 0;
     case 1: return 0;
     case 2: {
-      float alo, ahi, blo, bhi, clo, chi;
+      float alo, ahi, blo, bhi;
       float elo, ehi;
       e->a->getbounds(clb, cub, alo, ahi);
       e->b->getbounds(clb, cub, blo, bhi);
-      e->c->getbounds(clb, cub, clo, chi);
       e->getbounds(clb, cub, elo, ehi);
       float abound = max(fabs(alo), fabs(ahi));
       float bbound = max(fabs(blo), fabs(bhi));
@@ -540,7 +542,6 @@ int findit(expression *e, int nvar, float xlb, float xub,
       FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", clb[i], i, cub[i]);
     } catch (const char *) { return -2; } // infeasible.
 
-    lp_t lp(nvar, clb, cub);
     vector<pair<expression *, pair<float, float> > > exprs;
     FOR(i, testpoints.size()) {
       float lower, upper;
