@@ -34,6 +34,10 @@ Memory:  566MB
 Removed unused variables
   No change.
 
+Stopped recreating the exprs vector every time.
+  Time: 423.609375s
+Memory:  553MB
+
 */
 
 #include <stdio.h>
@@ -529,6 +533,7 @@ int find_cuts(expression *e, float xlb, float xub, const vector<float> &c, vecto
 int findit(expression *e, int nvar, float xlb, float xub,
     float *clb, float *cub, vector<float> &testpoints) {
   vector<float> coeffs(nvar);
+  vector<pair<expression *, pair<float, float>>> exprs;
   while (1) {
     try {
       lp_t lp(nvar, clb, cub);
@@ -542,11 +547,11 @@ int findit(expression *e, int nvar, float xlb, float xub,
       FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", clb[i], i, cub[i]);
     } catch (const char *) { return -2; } // infeasible.
 
-    vector<pair<expression *, pair<float, float> > > exprs;
-    FOR(i, testpoints.size()) {
+    {
+      float t = testpoints[testpoints.size() - 1];
       float lower, upper;
-      get_bounds(testpoints[i], lower, upper);
-      exprs.push_back(make_pair(subs(e, -1, testpoints[i]), make_pair(lower, upper)));
+      get_bounds(t, lower, upper);
+      exprs.push_back(make_pair(subs(e, -1, t), make_pair(lower, upper)));
     }
     try {
       coeffs = dive(nvar, clb, cub, exprs, coeffs, 50);
