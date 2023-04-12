@@ -121,7 +121,7 @@ indent:
 
 $(MAIN_PROG): % : %.o $(BASE_NAME).a 
 	@echo Linking $@
-	@$(CC) $(SW) $(INCLUDEDIR) $(MAINOPT) $< $(CCFLAGS) $(LD_ALL_OPTION) $(LIB_FLAGS) $(filter %.a,$^) $(LD_NOALL_OPTION) -o $@ 
+	@$(CC) $(SW) $(INCLUDEDIR) $(MAINOPT) $< $(CCFLAGS) $(LD_ALL_OPTION) $(filter %.a,$^) $(LD_NOALL_OPTION) -o $@  $(LIB_FLAGS) 
 
 $(MAIN_PROG_ST): %_st : %.o $(BASE_NAME).a 
 	@echo Linking $@
