@@ -113,16 +113,6 @@ struct lp_t {
       mpq_QSchange_coef(prob, nextrow, i, lhs[i].get_mpq_t());
     nextrow++;
   }
-
-  vector<mpq_class> get_current_solution() {
-    mpq_t foo[nvar];
-    FOR(i,nvar) mpq_init(foo[i]);
-    mpq_QSget_x_array(prob, foo);
-    vector<mpq_class> ans(nvar);
-    FOR(i,nvar) ans[i] = mpq_class(foo[i]);
-    FOR(i,nvar) mpq_clear(foo[i]);
-    return ans;
-  }
 };
 
 // Find all `x` such that `lb <= fma(x, y, z) < ub`.  The output is the
@@ -285,21 +275,6 @@ float eval(expression *e, float *x) {
     default: abort();
   }
 }
-
-void pretty_print(expression *e) {
-  switch (e->tag) {
-    case 0: printf("%a", e->val); return;
-    case 1: printf("x%i", e->varno); return;
-    case 2: printf("fma(");
-       pretty_print(e->a); printf(", ");
-       pretty_print(e->b); printf(", ");
-       pretty_print(e->c); printf(")");
-    return;
-    default: abort();
-  }
-}
-
-
 
 
 float half_ulp(float x) {
