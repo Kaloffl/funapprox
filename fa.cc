@@ -27,6 +27,10 @@ Fewer redundant expressions:
   Time: 460.390625s
 Memory:  566MB
 
+Improved getbounds
+  Time: 453.671875s
+Memory:  566MB
+
 */
 
 #include <stdio.h>
@@ -217,14 +221,8 @@ struct expression {
         float v6 = fmaf(au, bl, cu);
         float v7 = fmaf(al, bu, cu);
         float v8 = fmaf(au, bu, cu);
-        lower = upper = v1;
-        lower = min(lower, v2); upper = max(upper, v2);
-        lower = min(lower, v3); upper = max(upper, v3);
-        lower = min(lower, v4); upper = max(upper, v4);
-        lower = min(lower, v5); upper = max(upper, v5);
-        lower = min(lower, v6); upper = max(upper, v6);
-        lower = min(lower, v7); upper = max(upper, v7);
-        lower = min(lower, v8); upper = max(upper, v8);
+        lower = min(min(v1, v2), min(v3, v4));
+        upper = max(max(v5, v6), max(v7, v8));
       } return;
       default: abort();
     }
