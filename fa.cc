@@ -63,6 +63,10 @@ of Interval size.
   Time: 299.328125s
 Memory: 210MB
 
+Re-implemented reverse_fmaf with two binary searches.
+  Time: 283.812500s
+Memory: 210MB
+
 */
 
 #include <stdio.h>
@@ -174,78 +178,50 @@ struct lp_t {
 
 // Find all `x` such that `lb <= fma(x, y, z) <= ub`.  The output is the
 // interval `[lo, hi]`.
-//
-// The implementation of this function is quite savage.  It could profitably be
-// replaced by a couple of binary searches.  However, this implementation works
-// and I'm not too keen on touching it.
-Interval reverse_fmaf(float y, float z, Interval d) {
-  if (y < 0) {
-    y = -y;
-    z = -z;
-    d = { -d.upper, -d.upper };
+Interval reverse_fmaf(float b, float c, Interval d) {
+  if (b < 0) {
+    b = -b;
+    c = -c;
+    d = { -d.upper, -d.lower };
   }
 
-  float lo = -FLT_MAX, hi = FLT_MAX;
-  while (nextafterf(lo, hi) < hi) {
-    float c = lo/2 + hi/2;   // This BS is bad for floats.
-    float cc = fmaf(c, y, z);
-    if (cc < d.lower) lo = nextafterf(c, 1.0/0.0);
-    else hi = c;
-  }
-  lo = nextafterf(lo, -1.0/0.0);
-  lo = nextafterf(lo, -1.0/0.0);
-  assert(fmaf(lo, y, z) < d.lower);
-  while (fmaf(lo, y, z) < d.lower) lo = nextafterf(lo, 1.0/0.0);
-  hi = lo;
-  #define STEPIT(step) while (hi + (float)step != hi && fmaf(hi+(float)step, y, z) < d.upper) hi = hi + (float)step;
-  for (int zzz = 0; zzz < 3; zzz++) {
-    STEPIT(0x1.0p+120)
-    STEPIT(0x1.0p+110)
-    STEPIT(0x1.0p+100)
-    STEPIT(0x1.0p+90)
-    STEPIT(0x1.0p+80)
-    STEPIT(0x1.0p+70)
-    STEPIT(0x1.0p+60)
-    STEPIT(0x1.0p+50)
-    STEPIT(0x1.0p+45)
-    STEPIT(0x1.0p+40)
-    STEPIT(0x1.0p+35)
-    STEPIT(0x1.0p+30)
-    STEPIT(0x1.0p+25)
-    STEPIT(0x1.0p+20)
-    STEPIT(0x1.0p+15)
-    STEPIT(0x1.0p+10)
-    STEPIT(0x1.0p+5)
-    STEPIT(0x1.0p+0)
-    STEPIT(0x1.0p-5)
-    STEPIT(0x1.0p-10)
-    STEPIT(0x1.0p-15)
-    STEPIT(0x1.0p-20)
-    STEPIT(0x1.0p-25)
-    STEPIT(0x1.0p-30)
-    STEPIT(0x1.0p-35)
-    STEPIT(0x1.0p-40)
-    STEPIT(0x1.0p-45)
-    STEPIT(0x1.0p-50)
-    STEPIT(0x1.0p-55)
-    STEPIT(0x1.0p-60)
-    STEPIT(0x1.0p-65)
-    STEPIT(0x1.0p-70)
-    STEPIT(0x1.0p-80)
-    STEPIT(0x1.0p-90)
-    STEPIT(0x1.0p-100)
-    STEPIT(0x1.0p-110)
-    STEPIT(0x1.0p-120)
-  }
-  #undef STEPIT
-  while (fmaf(hi, y, z) <= d.upper) hi = nextafterf(hi, 1.0/0.0);
-  hi = nextafterf(hi, -1.0/0.0);
-  assert(d.lower <= fmaf(           lo,            y, z));
-  assert(           fmaf(           hi,            y, z) <= d.upper);
-  assert(           fmaf(nextafterf(lo, -1.0/0.0), y, z) <  d.lower);
-  assert(d.upper <  fmaf(nextafterf(hi,  1.0/0.0), y, z));
+  auto center_rd = [](int a, int b) {
+    return a/2 + b/2 - ((a < 0 && b < 0) ? ((a | b) & 1) : 0);
+  };
+  auto center_ru = [](int a, int b) {
+    return a/2 + b/2 + ((0 <= a && 0 <= b) ? ((a | b) & 1) : 0);
+  };
 
-  return { lo, hi };
+  Interval result;
+  { // Part I: find the lower bound
+    int search_lo = float_to_int(-FLT_MAX);
+    int search_hi = float_to_int( FLT_MAX);
+    while (search_lo < search_hi) {
+      int a = center_rd(search_lo, search_hi);
+      float aa = fmaf(int_to_float(a), b, c);
+      if (aa < d.lower) search_lo = a + 1;
+      else search_hi = a;
+    }
+    result.lower = int_to_float(search_lo);
+  }
+  { // Part II: find the upper bound
+    int search_lo = float_to_int(result.lower) - 1;
+    int search_hi = float_to_int(FLT_MAX);
+    while (search_lo < search_hi) {
+      int a = center_ru(search_lo, search_hi);
+      float aa = fmaf(int_to_float(a), b, c);
+      if (d.upper < aa) search_hi = a - 1;
+      else search_lo = a;
+    }
+    result.upper = int_to_float(search_hi);
+  }
+
+  assert(d.lower <= fmaf(           result.lower,            b, c));
+  assert(           fmaf(           result.upper,            b, c) <= d.upper);
+  assert(           fmaf(nextafterf(result.lower, -1.0/0.0), b, c) <  d.lower);
+  assert(d.upper <  fmaf(nextafterf(result.upper,  1.0/0.0), b, c));
+
+  return result;
 }
 
 // A node in a straight-line program that only has constants, variables, and
