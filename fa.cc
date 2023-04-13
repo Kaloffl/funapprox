@@ -46,6 +46,10 @@ Added Interval datatype
   Time: 368.312500s
 Memory: 553MB
 
+Moved vector con- and destruction out of the dive loops
+  Time: 375.875000s
+Memory: 553MB
+
 */
 
 #include <stdio.h>
@@ -128,8 +132,8 @@ struct lp_t {
   }
 };
 
-// Find all `x` such that `lb <= fma(x, y, z) < ub`.  The output is the
-// interval `[lo, hi)`.
+// Find all `x` such that `lb <= fma(x, y, z) <= ub`.  The output is the
+// interval `[lo, hi]`.
 //
 // The implementation of this function is quite savage.  It could profitably be
 // replaced by a couple of binary searches.  However, this implementation works
@@ -449,14 +453,14 @@ vector<float> dive(int nvar, const Interval *cb,
       / half_ulp(max(fabs(cb[nvar-1].lower), fabs(cb[nvar-1].upper)));
   printf("%a\n", num_ulps);
 
+  vector<pair<expression *, Interval>> new_ineqs = ineqs;
   if (num_ulps > tries) {
     FOR(zzz, tries) {
       float f = randpt() * (a.upper - a.lower) + a.lower;
       if (zzz == 0 && preferred[nvar-1] >= a.lower && preferred[nvar-1] <= a.upper)
         f = preferred[nvar-1];
-      vector<pair<expression *, Interval>> new_ineqs;
-      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
-          ineqs[i].second));
+      FOR(i, ineqs.size())
+        new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
       try {
         vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred);
         ans.push_back(f);
@@ -465,9 +469,8 @@ vector<float> dive(int nvar, const Interval *cb,
     }
   } else {
     for (float f = cb[nvar-1].lower; f <= cb[nvar-1].upper; f = nextafterf(f, 1.0/0.0)) {
-      vector<pair<expression *, Interval>> new_ineqs;
-      FOR(i, ineqs.size()) new_ineqs.push_back(make_pair(subs(ineqs[i].first, nvar-1, f),
-          ineqs[i].second));
+      FOR(i, ineqs.size())
+        new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
       try {
         vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred, 100);
         ans.push_back(f);
