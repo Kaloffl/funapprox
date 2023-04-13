@@ -54,6 +54,10 @@ Added interval_contains function.
   Time: 367.687500s
 Memory: 553MB
 
+Added interval_from_doubles function.
+  Time: 360.140625s
+Memory: 553MB
+
 */
 
 #include <stdio.h>
@@ -79,6 +83,16 @@ bool interval_contains(Interval i, float f) {
   return i.lower <= f && f <= i.upper;
 }
 
+Interval interval_from_doubles(double lower, double upper) {
+  Interval result = { float(lower), float(upper) };
+  if (double(result.lower) < lower) result.lower = nextafterf(result.lower,  1.0/0.0);
+  if (upper < double(result.upper)) result.upper = nextafterf(result.upper, -1.0/0.0);
+  assert(lower <= double(           result.lower));
+  assert(         double(nextafterf(result.lower, -1.0/0.0)) <  lower);
+  assert(         double(           result.upper)            <= upper);
+  assert(upper <  double(nextafterf(result.upper, 1.0/0.0)));
+  return result;
+}
 
 #define FOR(i,n) for (int i=0;i<(signed int)(n);i++)
 
@@ -316,11 +330,9 @@ static double ulps_wrong = 0.999;
 Interval get_bounds(float x) {
   double d = tan((double)x);
   float ulp = 2 * half_ulp((float)d);
-  double lo = d - ulps_wrong * ulp, up = d + ulps_wrong * ulp;
-  float lower = lo, upper = up;
-  if (lower < lo) lower = nextafterf(lower, 1.0/0.0);
-  if (upper > up) upper = nextafterf(upper, -1.0/0.0);
-  return { lower, upper };
+  double lo = d - ulps_wrong * ulp;
+  double up = d + ulps_wrong * ulp;
+  return interval_from_doubles(lo, up);
 }
 
 // Given a straight-line program `e` and bounds
@@ -433,11 +445,7 @@ Interval get_var_bounds(lp_t *lp, int varno) {
   mpq_class lo = lp->solve();
   obj[varno] = -1; lp->set_objective(obj);
   mpq_class up = -lp->solve();
-  float lower = lo.get_d(); // XXX Possible double-rounding anomaly?
-  float upper = up.get_d(); // XXX Possible double-rounding anomaly?
-  while (lower < lo) lower = nextafterf(lower,  1.0/0.0);
-  while (up < upper) upper = nextafterf(upper, -1.0/0.0);
-  return { lower, upper };
+  return interval_from_doubles(lo.get_d(), up.get_d()); // XXX Possible double-rounding anomaly?
 }
 
 // Bias guesses toward the centre of the interval.
