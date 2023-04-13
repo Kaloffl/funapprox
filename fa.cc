@@ -58,6 +58,11 @@ Added interval_from_doubles function.
   Time: 360.140625s
 Memory: 553MB
 
+Added Float<->Int conversion functions and used them for more precise measurement
+of Interval size.
+  Time: 299.328125s
+Memory: 210MB
+
 */
 
 #include <stdio.h>
@@ -74,6 +79,19 @@ extern "C" {
 #include <QSopt_ex.h>
 }
 using namespace std;
+
+int float_to_int(float f) {
+  int result;
+  memcpy(&result, &f, sizeof(float));
+  if (result< 0) result ^= 0x7FFFFFFF;
+  return result;
+}
+float int_to_float(int i) {
+  float result;
+  if (i< 0) i ^= 0x7FFFFFFF;
+  memcpy(&result, &i, sizeof(float));
+  return result;
+}
 
 struct Interval {
   float lower, upper;
@@ -457,7 +475,7 @@ double randpt() {
 // This is the body of the diving heuristic.
 vector<float> dive(int nvar, const Interval *cb,
     const vector<pair<expression *, Interval>> &ineqs,
-    const vector<float> &preferred, int tries = 8) {
+    const vector<float> &preferred, unsigned tries = 8) {
   if (nvar == 0) return vector<float>();
   lp_t lp(nvar, cb);
   FOR(i, ineqs.size()) {
@@ -465,12 +483,13 @@ vector<float> dive(int nvar, const Interval *cb,
   }
   Interval a = get_var_bounds(&lp, nvar-1);
 
-  double num_ulps = (cb[nvar-1].upper - cb[nvar-1].lower)
-      / half_ulp(max(fabs(cb[nvar-1].lower), fabs(cb[nvar-1].upper)));
-  printf("%a\n", num_ulps);
+  int lo = float_to_int(cb[nvar - 1].lower);
+  int hi = float_to_int(cb[nvar - 1].upper);
+  unsigned num_ulps = unsigned(hi) - unsigned(lo) + 1;
+  printf("%u\n", num_ulps);
 
   vector<pair<expression *, Interval>> new_ineqs = ineqs;
-  if (num_ulps > tries) {
+  if (tries < num_ulps) {
     FOR(zzz, tries) {
       float f = randpt() * (a.upper - a.lower) + a.lower;
       if (zzz == 0 && interval_contains(a, preferred[nvar-1]))
@@ -484,7 +503,8 @@ vector<float> dive(int nvar, const Interval *cb,
       } catch (const char *) {}
     }
   } else {
-    for (float f = cb[nvar-1].lower; f <= cb[nvar-1].upper; f = nextafterf(f, 1.0/0.0)) {
+    for (int j = lo; j <= hi; ++j) {
+      float f = int_to_float(j);
       FOR(i, ineqs.size())
         new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
       try {
@@ -503,17 +523,23 @@ vector<float> dive(int nvar, const Interval *cb,
 bool find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float> &testpoints) {
   float foo[c.size()+1];
   FOR(i, c.size()) foo[i+1] = c[i];
-  FOR(i, 1000000) {
-    float x = xb.lower + drand48() * (xb.upper - xb.lower);
-    foo[0] = x;
-    float fx = eval(e, foo+1);
-    Interval b = get_bounds(x);
-    if (!interval_contains(b, fx)) {
-      testpoints.push_back(x);
-      return true;
+  int lo = float_to_int(xb.lower);
+  int hi = float_to_int(xb.upper);
+  unsigned num_ulps = unsigned(hi) - unsigned(lo) + 1;
+  if (1000000 < num_ulps) {
+    FOR(i, 1000000) {
+      float x = xb.lower + drand48() * (xb.upper - xb.lower);
+      foo[0] = x;
+      float fx = eval(e, foo+1);
+      Interval b = get_bounds(x);
+      if (!interval_contains(b, fx)) {
+        testpoints.push_back(x);
+        return true;
+      }
     }
   }
-  for (float x = xb.upper; x >= xb.lower; x = nextafterf(x, -1.0/0.0)) {
+  for (int j = lo; j <= hi; ++j) {
+    float x = int_to_float(j);
     foo[0] = x;
     float fx = eval(e, foo+1);
     Interval b = get_bounds(x);
