@@ -50,6 +50,10 @@ Moved vector con- and destruction out of the dive loops
   Time: 375.875000s
 Memory: 553MB
 
+Added interval_contains function.
+  Time: 367.687500s
+Memory: 553MB
+
 */
 
 #include <stdio.h>
@@ -70,6 +74,10 @@ using namespace std;
 struct Interval {
   float lower, upper;
 };
+
+bool interval_contains(Interval i, float f) {
+  return i.lower <= f && f <= i.upper;
+}
 
 
 #define FOR(i,n) for (int i=0;i<(signed int)(n);i++)
@@ -457,7 +465,7 @@ vector<float> dive(int nvar, const Interval *cb,
   if (num_ulps > tries) {
     FOR(zzz, tries) {
       float f = randpt() * (a.upper - a.lower) + a.lower;
-      if (zzz == 0 && preferred[nvar-1] >= a.lower && preferred[nvar-1] <= a.upper)
+      if (zzz == 0 && interval_contains(a, preferred[nvar-1]))
         f = preferred[nvar-1];
       FOR(i, ineqs.size())
         new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
@@ -484,25 +492,29 @@ vector<float> dive(int nvar, const Interval *cb,
 // Given a straight-line program `e`, an interval `[xlb, xub]` of `float`s, and
 // a list `c` of coefficients, find at least one point `x` at which `e` with
 // coefficients `c` yields an unacceptable function value.
-int find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float> &testpoints) {
+bool find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float> &testpoints) {
   float foo[c.size()+1];
   FOR(i, c.size()) foo[i+1] = c[i];
-  int found = 0;
   FOR(i, 1000000) {
     float x = xb.lower + drand48() * (xb.upper - xb.lower);
     foo[0] = x;
     float fx = eval(e, foo+1);
     Interval b = get_bounds(x);
-    if (fx < b.lower || fx > b.upper) testpoints.push_back(x), found++;
-    if (found) return found;
+    if (!interval_contains(b, fx)) {
+      testpoints.push_back(x);
+      return true;
+    }
   }
-  for (float x = xb.upper; x >= xb.lower && !found; x = nextafterf(x, -1.0/0.0)) {
+  for (float x = xb.upper; x >= xb.lower; x = nextafterf(x, -1.0/0.0)) {
     foo[0] = x;
     float fx = eval(e, foo+1);
     Interval b = get_bounds(x);
-    if (fx < b.lower || fx > b.upper) testpoints.push_back(x), found++;
+    if (!interval_contains(b, fx)) {
+      testpoints.push_back(x);
+      return true;
+    }
   }
-  return found;
+  return false;
 }
 
 // Driver for the heuristic.  Given a straight-line program `e`, the number of
