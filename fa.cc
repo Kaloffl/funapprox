@@ -23,7 +23,7 @@ Baseline:
   Time: 622.171875s
 Memory: 3168MB
 
-Fewer redundant expressions:
+Fewer redundant expressions.
   Time: 460.390625s
 Memory:  566MB
 
@@ -67,45 +67,68 @@ Re-implemented reverse_fmaf with two binary searches.
   Time: 283.812500s
 Memory: 210MB
 
+One less layer of recursion in the dive function.
+  Time: 286.625000s
+Memory: 207MB
+
+AVX512-based max error search, function LUT, adding 3 testpoints at once.
+  Time: 227.421875s
+Memory: 1131MB
+
 */
 
 #include <stdio.h>
 #include <assert.h>
 #include <float.h>
 #include <math.h>
-#include <queue>
-#include <algorithm>
-#include <sys/types.h>
-#include <sys/resource.h>
 #include <gmpxx.h>
-#include <vector>
+#include <immintrin.h>
+#include <sys/resource.h>
 extern "C" {
 #include <QSopt_ex.h>
 }
+
+#include <algorithm>
+#include <bit>
+#include <vector>
+
 using namespace std;
 
-int float_to_int(float f) {
+inline int float_to_int(float f) {
   int result;
   memcpy(&result, &f, sizeof(float));
   if (result< 0) result ^= 0x7FFFFFFF;
   return result;
 }
-float int_to_float(int i) {
+inline float int_to_float(int i) {
   float result;
   if (i< 0) i ^= 0x7FFFFFFF;
   memcpy(&result, &i, sizeof(float));
   return result;
+}
+inline __m512 int_to_float(__m512i i) {
+  __mmask16 m = _mm512_movepi32_mask(i);
+  i = _mm512_mask_xor_epi32(i, m, i, _mm512_set1_epi32(0x7FFFFFFF));
+  __m512 f = _mm512_castsi512_ps(i);
+  return f;
+}
+
+inline int center_rd(int a, int b) {
+  return (a & b) + ((a ^ b) >> 1);
+}
+inline int center_ru(int a, int b) {
+  return (a & b) + (((a ^ b) + 1) >> 1);
 }
 
 struct Interval {
   float lower, upper;
 };
 
-bool interval_contains(Interval i, float f) {
+inline bool interval_contains(Interval i, float f) {
   return i.lower <= f && f <= i.upper;
 }
 
-Interval interval_from_doubles(double lower, double upper) {
+inline Interval interval_from_doubles(double lower, double upper) {
   Interval result = { float(lower), float(upper) };
   if (double(result.lower) < lower) result.lower = nextafterf(result.lower,  1.0/0.0);
   if (upper < double(result.upper)) result.upper = nextafterf(result.upper, -1.0/0.0);
@@ -309,11 +332,30 @@ float eval(expression *e, float *x) {
     default: abort();
   }
 }
+__m512 eval(const expression *e, const __m512 *x) {
+  switch (e->tag) {
+    case 0: return _mm512_set1_ps(e->val);
+    case 1: return x[e->varno];
+    case 2: return _mm512_fmadd_ps(eval(e->a, x), eval(e->b, x), eval(e->c, x));
+  }
+}
 
 
 float half_ulp(float x) {
   x = fabs(x);
   return (nextafterf(x, 1.0/0.0) - x) / 2;
+}
+
+float ulp_at(float f) {
+  f = fabs(f);
+  float next = nextafterf(f, 1.0f/0.0f);
+  return next - f;
+}
+
+__m512 ulp_at(__m512 f) {
+  f = _mm512_abs_ps(f);
+  __m512 next = _mm512_castsi512_ps(_mm512_add_epi32(_mm512_castps_si512(f), _mm512_set1_epi32(1)));
+  return _mm512_sub_ps(next, f);
 }
 
 // Compute the range `[lower, upper]` of acceptable function values at `x`.
@@ -449,81 +491,137 @@ double randpt() {
 }
 
 // This is the body of the diving heuristic.
-vector<float> dive(int nvar, const Interval *cb,
+vector<float> dive(int nvar, Interval *cb,
     const vector<pair<expression *, Interval>> &ineqs,
     const vector<float> &preferred, unsigned tries = 8) {
-  if (nvar == 0) return vector<float>();
   lp_t lp(nvar, cb);
   FOR(i, ineqs.size()) {
     gen_inequalities_inner(ineqs[i].first, ineqs[i].second, nvar, cb, &lp);
   }
   Interval a = get_var_bounds(&lp, nvar-1);
+  if (1 == nvar) {
+    return {randpt() * (a.upper - a.lower) + a.lower};
+  }
+  Interval old_b = cb[nvar - 1];
+  cb[nvar - 1] = a;
 
-  int lo = float_to_int(cb[nvar - 1].lower);
-  int hi = float_to_int(cb[nvar - 1].upper);
+  int lo = float_to_int(a.lower);
+  int hi = float_to_int(a.upper);
   unsigned num_ulps = unsigned(hi) - unsigned(lo) + 1;
   printf("%u\n", num_ulps);
 
   vector<pair<expression *, Interval>> new_ineqs = ineqs;
   if (tries < num_ulps) {
-    FOR(zzz, tries) {
-      float f = randpt() * (a.upper - a.lower) + a.lower;
-      if (zzz == 0 && interval_contains(a, preferred[nvar-1]))
-        f = preferred[nvar-1];
+    float f = preferred[nvar - 1];
+    if (interval_contains(cb[nvar - 1], f)) {
+      tries -= 1;
       FOR(i, ineqs.size())
         new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
       try {
         vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred);
         ans.push_back(f);
+        cb[nvar - 1] = old_b;
+        return ans;
+      } catch (const char *) {}
+    }
+    FOR(zzz, tries) {
+      float f = randpt() * (cb[nvar - 1].upper - cb[nvar - 1].lower) + cb[nvar - 1].lower;
+      FOR(i, ineqs.size())
+        new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
+      try {
+        vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred);
+        ans.push_back(f);
+        cb[nvar - 1] = old_b;
         return ans;
       } catch (const char *) {}
     }
   } else {
-    for (int j = lo; j <= hi; ++j) {
+    auto next = [](int i) {
+      return (~i) + ((i >> 31) & 1);
+    };
+    int center = center_ru(lo, hi);
+
+    for (int k = 0; lo <= center + k && center + k <= hi; k = next(k)) {
+      int j = k + center;
+    //for (int j = lo; j <= hi; ++j) {
       float f = int_to_float(j);
       FOR(i, ineqs.size())
         new_ineqs[i].first = subs(ineqs[i].first, nvar-1, f);
       try {
         vector<float> ans = dive(nvar-1, cb, new_ineqs, preferred, 100);
         ans.push_back(f);
+        cb[nvar - 1] = old_b;
         return ans;
       } catch (const char *) {}
     }
   }
+  cb[nvar - 1] = old_b;
   throw ":(";
+}
+
+float *lower_bounds;
+float *upper_bounds;
+void init_bounds_lut(Interval xb) {
+  int lo = float_to_int(xb.lower);
+  int hi = float_to_int(xb.upper);
+  unsigned num_ulps = unsigned(hi) - unsigned(lo) + 1;
+  lower_bounds = new float[num_ulps] - lo;
+  upper_bounds = new float[num_ulps] - lo;
+  for (int i = lo; i <= hi; ++i) {
+    Interval iv = get_bounds(int_to_float(i));
+    lower_bounds[i] = iv.lower;
+    upper_bounds[i] = iv.upper;
+  }
 }
 
 // Given a straight-line program `e`, an interval `[xlb, xub]` of `float`s, and
 // a list `c` of coefficients, find at least one point `x` at which `e` with
 // coefficients `c` yields an unacceptable function value.
-bool find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float> &testpoints) {
-  float foo[c.size()+1];
-  FOR(i, c.size()) foo[i+1] = c[i];
-  int lo = float_to_int(xb.lower);
-  int hi = float_to_int(xb.upper);
-  unsigned num_ulps = unsigned(hi) - unsigned(lo) + 1;
-  if (1000000 < num_ulps) {
-    FOR(i, 1000000) {
-      float x = xb.lower + drand48() * (xb.upper - xb.lower);
-      foo[0] = x;
-      float fx = eval(e, foo+1);
-      Interval b = get_bounds(x);
-      if (!interval_contains(b, fx)) {
-        testpoints.push_back(x);
-        return true;
-      }
-    }
-  }
-  for (int j = lo; j <= hi; ++j) {
-    float x = int_to_float(j);
+bool find_cuts(expression *e, Interval xb, const float *c, int nvar, float *cut) {
+  int lo_i = float_to_int(xb.lower);
+  int hi_i = float_to_int(xb.upper);
+  int i = lo_i;
+  __m512 foo[nvar + 1];
+  for (int i = 0; i < nvar; ++i) foo[i + 1] = _mm512_set1_ps(c[i]);
+  __m512i ix = _mm512_set_epi32(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+  ix = _mm512_add_epi32(ix, _mm512_set1_epi32(lo_i));
+  __m512 largest_error_v = {};
+  __m512 error_at = {};
+  __mmask16 mask = _mm512_cmp_epi32_mask(ix, _mm512_set1_epi32(hi_i), _MM_CMPINT_LE);
+  while (_mm512_mask2int(mask)) {
+    __m512 x = int_to_float(ix);
+
     foo[0] = x;
-    float fx = eval(e, foo+1);
-    Interval b = get_bounds(x);
-    if (!interval_contains(b, fx)) {
-      testpoints.push_back(x);
-      return true;
+    __m512 fx = eval(e, foo + 1);
+
+    __m512 lo = _mm512_maskz_loadu_ps(mask, lower_bounds + i);
+    __m512 hi = _mm512_maskz_loadu_ps(mask, upper_bounds + i);
+
+    __m512 error = _mm512_max_ps(_mm512_sub_ps(lo, fx), _mm512_sub_ps(fx, hi));
+    error = _mm512_div_ps(error, ulp_at(fx));
+    __mmask16 m = _mm512_cmp_ps_mask(largest_error_v, error, _CMP_LT_OQ);
+    m = _kand_mask16(m, mask);
+
+    largest_error_v = _mm512_mask_blend_ps(m, largest_error_v, error);
+    error_at        = _mm512_mask_blend_ps(m, error_at, x);
+
+    ix = _mm512_add_epi32(ix, _mm512_set1_epi32(16));
+    mask = _mm512_cmp_epi32_mask(ix, _mm512_set1_epi32(hi_i), _MM_CMPINT_LE);
+    i += 16;
+  }
+
+  float largest_error = 0.0f;
+  float errors[16];
+  float values[16];
+  _mm512_storeu_ps(errors, largest_error_v);
+  _mm512_storeu_ps(values, error_at);
+  for (int j = 0; j < 16; ++j) {
+    if (largest_error < errors[j]) {
+      largest_error = errors[j];
+      *cut = values[j];
     }
   }
+  if (largest_error != 0.0f) return true;
   return false;
 }
 
@@ -532,9 +630,18 @@ bool find_cuts(expression *e, Interval xb, const vector<float> &c, vector<float>
 // bounds `[clb_0, cub_0] x ... x [clb_{nvar-1}, cub_{nvar-1}]` on the
 // unspecified coefficients, and a nonempty vector `testpoints` of test points,
 // try to find coefficients that yield an acceptable approximation.
-int findit(expression *e, int nvar, Interval xb, Interval *cb, vector<float> &testpoints) {
+int findit(expression *e, int nvar, Interval xb, Interval *cb) {
+
   vector<float> coeffs(nvar);
+  vector<float> testpoints;
+  FOR (i, nvar) coeffs[i] = (cb[i].lower + cb[i].upper) / 2.0f;
   vector<pair<expression *, Interval>> exprs;
+  init_bounds_lut(xb);
+  auto add_tp = [&](float f) {
+    testpoints.push_back(f);
+    exprs.push_back(make_pair(subs(e, -1, f), get_bounds(f)));
+  };
+  add_tp((xb.lower + xb.upper) / 2.0f);
   while (1) {
     try {
       lp_t lp(nvar, cb);
@@ -547,16 +654,16 @@ int findit(expression *e, int nvar, Interval xb, Interval *cb, vector<float> &te
       FOR(i, nvar) printf("%.6a <= c%i <= %.6a\n", cb[i].lower, i, cb[i].upper);
     } catch (const char *) { return -2; } // infeasible.
 
-    {
-      float t = testpoints[testpoints.size() - 1];
-      exprs.push_back(make_pair(subs(e, -1, t), get_bounds(t)));
-    }
     try {
       coeffs = dive(nvar, cb, exprs, coeffs, 50);
     } catch (const char *) { return -1; } // infeasible or too hard to solve.
     printf("usces: %lli\n", get_cpu_usecs() - program_start);
     FOR(i, coeffs.size()) printf("float c%i = %a\n", i, coeffs[i]);
-    if (!find_cuts(e, xb, coeffs, testpoints)) return 0;
+    float cut;
+    if (!find_cuts(e, xb, coeffs.data(), nvar, &cut)) return 0;
+    add_tp(nextafterf(cut, -1.0f/0.0f));
+    add_tp(cut);
+    add_tp(nextafterf(cut,  1.0f/0.0f));
     printf("vector<float> testpoints = {");
     FOR(i, testpoints.size()) printf(i?",%a":"%a", testpoints[i]);
     printf("};\n");
@@ -596,9 +703,7 @@ int main() {
     {-1, 1}
   };
 
-  vector<float> testpoints = {0x1p-1};
-
-  int k = findit(tan_poly, 7, {1e-4, M_PI/4}, cb, testpoints);
+  int k = findit(tan_poly, 7, {1e-4, M_PI/4}, cb);
 
   printf("%i\n", k);
 }

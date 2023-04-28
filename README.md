@@ -57,6 +57,6 @@ Lines that look like this:
 represent the current status of the diving search.  Each line gives the number of `float`s for some coefficient that have not yet been proven infeasible.
 
 At the end of execution, the program prints out `0`, `-1`, or `-2`.  `0` means
-that the most recent candidate list of coefficients provably works.  `-1` means
-that there are provably no coefficients that work.  `-2` means that the
+that the most recent candidate list of coefficients provably works.  `-2` means
+that there are provably no coefficients that work.  `-1` means that the
 heuristic gave up trying to solve the problem because a recursive search took too long.
